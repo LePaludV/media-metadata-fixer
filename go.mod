@@ -1,4 +1,4 @@
-module github.com/vlepalud/photo-metadata-fixer
+module github.com/vlepalud/media-metadata-fixer
 
 go 1.26.1
 

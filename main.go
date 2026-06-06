@@ -13,17 +13,17 @@ import (
 
 func main() {
 	var (
-		source     = flag.String("source", "", "path to Takeout root (required)")
-		output     = flag.String("output", "", "path to output root (required)")
-		report     = flag.String("report", "report.csv", "path to CSV report")
-		workers    = flag.Int("workers", 0, "number of parallel workers (0 = NumCPU)")
-		dryRun     = flag.Bool("dry-run", false, "scan and log only, write nothing")
-		verbose    = flag.Bool("verbose", false, "log every file processed")
+		source  = flag.String("source", "", "path to Takeout root (required)")
+		output  = flag.String("output", "", "path to output root (required)")
+		report  = flag.String("report", "report.csv", "path to CSV report")
+		workers = flag.Int("workers", 0, "number of parallel workers (0 = NumCPU)")
+		dryRun  = flag.Bool("dry-run", false, "scan and log only, write nothing")
+		verbose = flag.Bool("verbose", false, "log every file processed")
 	)
 	flag.Parse()
 
 	if *source == "" || *output == "" {
-		fmt.Fprintln(os.Stderr, "usage: photo-metadata-fixer --source <dir> --output <dir> [--dry-run] [--verbose] [--workers N] [--report path.csv]")
+		fmt.Fprintln(os.Stderr, "usage: media-metadata-fixer --source <dir> --output <dir> [--dry-run] [--verbose] [--workers N] [--report path.csv]")
 		os.Exit(2)
 	}
 

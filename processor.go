@@ -76,7 +76,10 @@ func (p *Processor) handle(ctx context.Context, pair Pair) {
 		row.OutputPath = dest
 		row.Status = StatusNoMatch
 		if !p.Opts.DryRun {
-			if err := copyWithDedup(pair.MediaPath, &dest); err != nil {
+			if _, err := os.Stat(dest); err == nil {
+				// Already copied by a previous run — skip to avoid re-duplicating.
+				row.Status = StatusSkipped
+			} else if err := copyWithDedup(pair.MediaPath, &dest); err != nil {
 				row.Status = StatusError
 				row.Error = err.Error()
 			} else {
@@ -119,9 +122,12 @@ func (p *Processor) handle(ctx context.Context, pair Pair) {
 		return
 	}
 
-	// Idempotence: if destination already exists with the same size, assume
-	// a previous run handled it and skip both copy & exiftool.
-	if same, err := sameSize(pair.MediaPath, dest); err == nil && same {
+	// Idempotence: if a file already exists at this destination, a previous run
+	// handled it — skip both copy & exiftool. We test existence, NOT size:
+	// exiftool grows the file after copy (it adds EXIF), so dest no longer
+	// matches the source size, and a size check would re-copy every processed
+	// file as a " (N)" duplicate on resume.
+	if _, err := os.Stat(dest); err == nil {
 		row.Status = StatusSkipped
 		if p.Opts.Verbose {
 			log.Printf("skipped (already exists): %s", dest)

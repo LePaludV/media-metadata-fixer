@@ -1,4 +1,4 @@
-# photo-metadata-fixer
+# media-metadata-fixer
 
 A Go CLI tool to re-inject metadata from a **Google Takeout** export (photos / videos) by reading the JSON sidecar files (`*.supplemental-metadata.json`) and writing the original capture date and GPS coordinates back into the media files themselves.
 
@@ -35,9 +35,9 @@ This tool automates that work at scale (tested on Takeout exports of 100 GB+).
 ## Installation
 
 ```bash
-git clone https://github.com/<your-user>/photo-metadata-fixer
-cd photo-metadata-fixer
-go build -o photo-metadata-fixer .
+git clone https://github.com/<your-user>/media-metadata-fixer
+cd media-metadata-fixer
+go build -o media-metadata-fixer .
 ```
 
 ## Usage
@@ -47,7 +47,7 @@ go build -o photo-metadata-fixer .
 Scans and logs what would happen but writes nothing:
 
 ```bash
-./photo-metadata-fixer \
+./media-metadata-fixer \
   --source ./Takeout \
   --output ./out \
   --dry-run \
@@ -57,7 +57,7 @@ Scans and logs what would happen but writes nothing:
 ### Real run
 
 ```bash
-./photo-metadata-fixer \
+./media-metadata-fixer \
   --source ./Takeout \
   --output ./out \
   --report final.csv
@@ -65,18 +65,34 @@ Scans and logs what would happen but writes nothing:
 
 ### CLI options
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--source` | (required) | Takeout root directory |
-| `--output` | (required) | Output directory |
-| `--report` | `report.csv` | Path to the CSV report |
-| `--workers` | `0` (= `NumCPU`) | Number of parallel workers |
-| `--dry-run` | `false` | Analyze only, do not write any file |
-| `--verbose` | `false` | Log every file processed |
+| Flag        | Default          | Description                         |
+| ----------- | ---------------- | ----------------------------------- |
+| `--source`  | (required)       | Takeout root directory              |
+| `--output`  | (required)       | Output directory                    |
+| `--report`  | `report.csv`     | Path to the CSV report              |
+| `--workers` | `0` (= `NumCPU`) | Number of parallel workers          |
+| `--dry-run` | `false`          | Analyze only, do not write any file |
+| `--verbose` | `false`          | Log every file processed            |
 
 ### Resume after interruption
 
 Idempotence is handled by file size: if the destination already contains a file with the same size as the source, it is **skipped** (status `skipped` in the report). You can safely re-run the command after a Ctrl-C or crash.
+
+## Real-world example
+
+A full run on a real Google Takeout export, copying the output to an **external USB HDD** :
+
+| Metric                  | Value                                       |
+| ----------------------- | ------------------------------------------- |
+| Media files scanned     | 20 549                                      |
+| JSON sidecars scanned   | 20 484                                      |
+| Media matched to a JSON | 20 131                                      |
+| Workers                 | 10                                          |
+| Output target           | External USB HDD                            |
+| Throughput              | ~2 files/s (disk-bound by the external HDD) |
+| **Total duration**      | **~3 h 35 min**                             |
+
+> **Note on throughput**: ~2 files/s is far below what the tool can do on a local SSD (see [Known limitations](#known-limitations)). Writing to an external USB HDD is the bottleneck — every file is fully copied, so the run is limited by the drive's sustained write speed, not CPU. On a local SSD the same volume completes in well under an hour.
 
 ## Output structure
 
@@ -102,6 +118,7 @@ out/
 Columns: `source_path`, `output_path`, `status`, `json_path`, `date_taken`, `gps`, `error`
 
 Possible statuses:
+
 - `ok`: media copied and metadata injected successfully
 - `skipped`: already present at destination (idempotence)
 - `no_match`: no JSON found for this media (or orphan JSON)
@@ -115,7 +132,7 @@ Possible statuses:
 The project is deliberately simple: a single `main` package, each file with a clear responsibility.
 
 ```
-photo-metadata-fixer/
+media-metadata-fixer/
 ├── go.mod / go.sum     # Go dependencies
 ├── main.go             # CLI flags + top-level orchestration
 ├── walker.go           # walk the Takeout, classify JSON vs media
@@ -164,6 +181,7 @@ photo-metadata-fixer/
 Parses CLI flags, wires components together, orchestrates the pipeline (walk → match → process → report).
 
 Key points:
+
 - Clean `Ctrl-C` handling via `signal.Notify` + `context.WithCancel`: in-flight `exiftool` calls get cancelled cleanly
 - Checks `exiftool` is available at startup (`CheckExiftool`) — fail fast instead of failing per file
 - Creates the output directory (`os.MkdirAll`) when not in dry-run
@@ -187,6 +205,7 @@ type SidecarJSON struct {
 ```
 
 Helpers:
+
 - `PhotoTaken() time.Time`: converts the Unix timestamp string → UTC `time.Time`
 - `BestGeo() (lat, lon, alt, ok)`: returns `geoDataExif` if non-zero, else `geoData`, else `ok=false`
 - `LoadSidecar(path)`: reads and parses a JSON file from disk
@@ -227,6 +246,7 @@ Instead of trying to guess the truncation, we exploit the fact that **every JSON
 - **Fallback** — `title → entry`: used when media and JSON live in different directories
 
 For each media file, lookups are tried in this order:
+
 1. Same directory + exact filename
 2. Same directory + filename with `~N` edit suffix stripped
 3. Global index by name only (any directory)
@@ -235,6 +255,7 @@ For each media file, lookups are tried in this order:
 ### `~N` fallback
 
 For edits like `IMG_xxx~2.jpg` that reuse the original's JSON (`IMG_xxx.jpg.supplemental-metadata.json`):
+
 1. Direct lookup `IMG_xxx~2.jpg` → miss
 2. `stripEditedSuffix("IMG_xxx~2.jpg")` → `"IMG_xxx.jpg"`
 3. Lookup with the stripped name → hit
@@ -262,16 +283,19 @@ Minimal wrapper around the `exiftool` binary (called as a subprocess). Three fun
 Builds the exiftool command line based on the file type.
 
 Common args:
+
 - `-overwrite_original`: no `.jpg_original` backup file (the source is already preserved in the input directory)
 - `-AllDates="YYYY:MM:DD HH:MM:SS"`: shortcut for `DateTimeOriginal`, `CreateDate`, `ModifyDate`
 - `-FileModifyDate`: filesystem mtime (every OS)
 - `-FileCreateDate`: filesystem birth time (macOS / Windows only — so Finder's "Date created" column matches)
 
 GPS (when present):
+
 - Negative latitude/longitude → `LatitudeRef=S` / `LongitudeRef=W`, else `N` / `E`
 - Negative altitude → `AltitudeRef=1` (below sea level)
 
 Video-specific (mp4, mov, m4v, 3gp):
+
 - `-api QuickTimeUTC=1` so players interpret the timezone correctly
 - Explicit QuickTime tags: `CreateDate`, `ModifyDate`, `TrackCreateDate`, `TrackModifyDate`, `MediaCreateDate`, `MediaModifyDate`
 
@@ -332,11 +356,13 @@ If `out/2024/10/IMG_xxx.jpg` already exists but with a different size (so it's a
 CSV writer with a `sync.Mutex` for concurrent safety (multiple workers write at the same time).
 
 Structures:
+
 - `Status` (enum): `ok` / `skipped` / `no_match` / `error` / `dry_run`
 - `ReportRow`: one CSV line
 - `Reporter`: wraps `csv.Writer` + mutex + per-status counters
 
 API:
+
 - `NewReporter(path)`: creates the file, writes the header
 - `Write(row)`: appends + bumps counter (thread-safe)
 - `Summary()`: returns `"ok=N skipped=N no_match=N error=N dry_run=N"`
@@ -346,19 +372,19 @@ API:
 
 # Handled edge cases
 
-| Case | Handling |
-|------|----------|
-| Truncated JSON name (`.supplemental-met.json`) | Match through the JSON's `title` field |
-| Edit `IMG_xxx~2.jpg` reusing the original JSON | Fallback strips `~N` and retries |
-| Media and JSON in different directories (album dupes, split archives) | Global name-only fallback index |
-| `métadonnées.json`, `commentaires_albums_partagés.json` | Ignored (title has no media extension) |
-| Media with no JSON | Copied to `out/_unknown/`, status `no_match` |
-| Corrupted JSON | Logged in `parseErrors`, JSON ignored |
-| GPS = (0, 0) | Treated as invalid → no GPS write |
-| Filename collisions at destination | Suffix ` (1)`, ` (2)`, … |
-| Resume after interruption | Skipped if destination size matches source |
-| `Ctrl-C` during a run | `context.Cancel` → in-flight exiftool calls cancelled |
-| `Corbeille/` folder | Processed like any other folder |
+| Case                                                                  | Handling                                              |
+| --------------------------------------------------------------------- | ----------------------------------------------------- |
+| Truncated JSON name (`.supplemental-met.json`)                        | Match through the JSON's `title` field                |
+| Edit `IMG_xxx~2.jpg` reusing the original JSON                        | Fallback strips `~N` and retries                      |
+| Media and JSON in different directories (album dupes, split archives) | Global name-only fallback index                       |
+| `métadonnées.json`, `commentaires_albums_partagés.json`               | Ignored (title has no media extension)                |
+| Media with no JSON                                                    | Copied to `out/_unknown/`, status `no_match`          |
+| Corrupted JSON                                                        | Logged in `parseErrors`, JSON ignored                 |
+| GPS = (0, 0)                                                          | Treated as invalid → no GPS write                     |
+| Filename collisions at destination                                    | Suffix ` (1)`, ` (2)`, …                              |
+| Resume after interruption                                             | Skipped if destination size matches source            |
+| `Ctrl-C` during a run                                                 | `context.Cancel` → in-flight exiftool calls cancelled |
+| `Corbeille/` folder                                                   | Processed like any other folder                       |
 
 ---
 
@@ -375,10 +401,10 @@ API:
 
 1. **Back up** your original Takeout before anything else (just in case).
 2. **Install exiftool**: `brew install exiftool`.
-3. **Build**: `go build -o photo-metadata-fixer .`
+3. **Build**: `go build -o media-metadata-fixer .`
 4. **Dry-run on the full set**:
    ```bash
-   ./photo-metadata-fixer --source ./Takeout --output ./out --dry-run --report dry.csv
+   ./media-metadata-fixer --source ./Takeout --output ./out --dry-run --report dry.csv
    ```
 5. **Inspect `dry.csv`**:
    - How many `no_match`? Acceptable?
@@ -386,7 +412,7 @@ API:
 6. **Test on a subset**: copy a couple of `Takeout/2024/` folders into a separate test directory and run for real. Open the files in a viewer (Apple Photos, exiftool read-only) to confirm the EXIF is correct.
 7. **Run on the full set**:
    ```bash
-   ./photo-metadata-fixer --source ./Takeout --output ./out --report final.csv
+   ./media-metadata-fixer --source ./Takeout --output ./out --report final.csv
    ```
 8. **Check `final.csv`**: count statuses, handle `error` rows manually if needed.
 

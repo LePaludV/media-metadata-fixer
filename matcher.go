@@ -13,14 +13,29 @@ type Pair struct {
 	Sidecar   *SidecarJSON // parsed sidecar content, nil if no match
 }
 
-// editedSuffixRe matches Google's "edited copy" suffix: ~2, ~3, …
-// e.g. IMG_20241002_175132~2.jpg -> base IMG_20241002_175132.jpg
-var editedSuffixRe = regexp.MustCompile(`~\d+(\.[^.]+)$`)
+// editedSuffixRe matches Google's "edited copy" suffixes that all point back
+// to the original media's sidecar:
+//   - ~N numeric suffix:       IMG_20241002_175132~2.jpg
+//   - localized "edited" word: Screenshot_20170703-000431-modifié.jpg (FR),
+//                              IMG_xxx-edited.jpg (EN)
+// In every case the original base name (IMG_20241002_175132.jpg, …) is what
+// the JSON's title field references. Case-insensitive so "-Modifié" matches.
+// The "é" is accepted both precomposed (NFC, U+00E9) and decomposed
+// (NFD, "e" + U+0301) — macOS stores filenames decomposed.
+var editedSuffixRe = regexp.MustCompile(`(?i)(?:~\d+|-modifi(?:é|e\x{0301})e?|-edited)(\.[^.]+)$`)
 
-// stripEditedSuffix removes ~N just before the file extension, returning the
-// original base name. If no suffix is found, the input is returned unchanged.
+// stripEditedSuffix removes the edit suffix just before the file extension,
+// returning the original base name. If no suffix is found, the input is
+// returned unchanged.
 func stripEditedSuffix(name string) string {
 	return editedSuffixRe.ReplaceAllString(name, "$1")
+}
+
+// stemKey returns the lower-cased filename without its extension. It's used to
+// pair a Motion Photo / Live Photo video (e.g. MVIMG_x.MP4) with the sidecar
+// of its still counterpart (MVIMG_x.jpg) when the video has no JSON of its own.
+func stemKey(name string) string {
+	return strings.ToLower(strings.TrimSuffix(name, filepath.Ext(name)))
 }
 
 // indexKey builds the map key used to pair a JSON with a media file:
@@ -42,10 +57,12 @@ type indexEntry struct {
 //
 // Matching order per media file:
 //  1. Same directory + exact name
-//  2. Same directory + name with ~N edit suffix stripped
+//  2. Same directory + name with edit suffix (~N, -modifié, -edited) stripped
 //  3. Global index by name alone (any directory) — handles Google Takeout
 //     splits across multiple archives and duplicated album folders
 //  4. Global index by stripped name
+//  5. For videos only: the sidecar of the still image sharing the same stem
+//     (Motion Photo / Live Photo: MVIMG_x.MP4 borrows MVIMG_x.jpg's JSON)
 //
 // Orphan JSONs (parsed sidecars that didn't match any media) are returned
 // separately so the reporter can log them.
@@ -58,6 +75,10 @@ func Match(walked *WalkResult) (pairs []Pair, orphanJSONs []string, parseErrors 
 	// keep the first one; duplicates of the same photo carry the same
 	// metadata anyway.
 	nameIndex := make(map[string]indexEntry, len(walked.JSONFiles))
+	// Stem index: filename without extension -> sidecar, built only from
+	// still-image titles. Lets an unmatched video reuse the still's metadata
+	// (Motion / Live Photo). On collision the first one wins.
+	stemIndex := make(map[string]indexEntry, len(walked.JSONFiles))
 	consumed := make(map[string]bool, len(walked.JSONFiles))
 
 	for _, jsonPath := range walked.JSONFiles {
@@ -74,6 +95,13 @@ func Match(walked *WalkResult) (pairs []Pair, orphanJSONs []string, parseErrors 
 		nameKey := strings.ToLower(side.Title)
 		if _, exists := nameIndex[nameKey]; !exists {
 			nameIndex[nameKey] = e
+		}
+		if !isVideo(side.Title) {
+			if sk := stemKey(side.Title); sk != "" {
+				if _, exists := stemIndex[sk]; !exists {
+					stemIndex[sk] = e
+				}
+			}
 		}
 	}
 
@@ -95,6 +123,11 @@ func Match(walked *WalkResult) (pairs []Pair, orphanJSONs []string, parseErrors 
 		}
 		if !ok && stripped != base {
 			e, ok = nameIndex[strings.ToLower(stripped)]
+		}
+		// Motion Photo / Live Photo: a video with no sidecar of its own
+		// borrows the still image's JSON (same capture time and GPS).
+		if !ok && isVideo(base) {
+			e, ok = stemIndex[stemKey(stripped)]
 		}
 		if ok {
 			p.JSONPath = e.path
